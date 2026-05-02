@@ -1,96 +1,120 @@
 pipeline {
     agent any
-    
-    environment {
-        DOCKER_HUB_REPO = 'atuljkamble/basic-webapp'
-        DOCKER_HUB_CREDENTIALS = 'dockerhub-credentials' // Jenkins credential ID
-        GIT_REPO = 'https://github.com/atulkamble/git-docker-jenkins-project.git'
-        IMAGE_TAG = "${BUILD_NUMBER}"
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
     }
-    
+
+    environment {
+        DOCKER_HUB_REPO = 'prathitagarje/basic-webapp'
+        DOCKER_HUB_CREDENTIALS = 'dockerhub-credentials'
+        GIT_REPO = 'https://github.com/prathitagarje/git-docker-jenkins-project.git'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        CONTAINER_NAME = "basic-webapp"
+    }
+
     stages {
+
         stage('Checkout') {
             steps {
-                echo 'Checking out code from Git...'
+                echo 'Checking out code...'
                 git branch: 'main', url: "${GIT_REPO}"
             }
         }
-        
-        stage('Build') {
+
+        stage('Build Image') {
             steps {
-                echo 'Building Docker image...'
                 script {
                     dockerImage = docker.build("${DOCKER_HUB_REPO}:${IMAGE_TAG}")
                     docker.build("${DOCKER_HUB_REPO}:latest")
                 }
             }
         }
-        
-        stage('Test') {
+
+        stage('Test Container') {
             steps {
-                echo 'Running tests...'
                 script {
-                    // Run container and test API endpoint
-                    sh """
-                        docker run -d --name test-container -p 3001:3000 ${DOCKER_HUB_REPO}:${IMAGE_TAG}
-                        sleep 5
-                        curl -f http://localhost:3001/api/hello || exit 1
-                        docker stop test-container
-                        docker rm test-container
-                    """
+                    sh '''
+                    docker run -d --name test-container -p 3001:3000 ${DOCKER_HUB_REPO}:${IMAGE_TAG}
+                    
+                    # Wait until app is ready
+                    for i in {1..10}; do
+                      if curl -s http://localhost:3001/health; then
+                        echo "App is up!"
+                        break
+                      fi
+                      sleep 3
+                    done
+
+                    curl -f http://localhost:3001/api/hello
+
+                    docker stop test-container
+                    docker rm test-container
+                    '''
                 }
             }
         }
-        
-        stage('Push to Docker Hub') {
+
+        stage('Push Image') {
             steps {
-                echo 'Pushing Docker image to Docker Hub...'
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', "${DOCKER_HUB_CREDENTIALS}") {
+                    docker.withRegistry('', "${DOCKER_HUB_CREDENTIALS}") {
                         dockerImage.push("${IMAGE_TAG}")
                         dockerImage.push("latest")
                     }
                 }
             }
         }
-        
+
         stage('Deploy') {
             steps {
-                echo 'Deploying application...'
                 script {
-                    sh """
-                        docker stop basic-webapp || true
-                        docker rm basic-webapp || true
-                        docker run -d --name basic-webapp -p 3000:3000 ${DOCKER_HUB_REPO}:latest
-                    """
+                    sh '''
+                    docker stop ${CONTAINER_NAME} || true
+                    docker rm ${CONTAINER_NAME} || true
+
+                    docker run -d \
+                      --name ${CONTAINER_NAME} \
+                      -p 3000:3000 \
+                      --restart always \
+                      ${DOCKER_HUB_REPO}:latest
+                    '''
                 }
             }
         }
-        
+
         stage('Health Check') {
             steps {
-                echo 'Performing health check...'
                 script {
-                    sh """
-                        sleep 5
-                        curl -f http://localhost:3000/api/hello || exit 1
+                    sh '''
+                    for i in {1..10}; do
+                      if curl -f http://localhost:3000/health; then
                         echo "Application is healthy!"
-                    """
+                        exit 0
+                      fi
+                      sleep 3
+                    done
+                    echo "Health check failed!"
+                    exit 1
+                    '''
                 }
             }
         }
     }
-    
+
     post {
         always {
-            echo 'Cleaning up...'
-            sh 'docker system prune -f'
+            echo 'Cleaning workspace...'
+            sh 'docker system prune -f || true'
         }
+
         success {
-            echo 'Pipeline completed successfully!'
+            echo 'Deployment successful'
         }
+
         failure {
-            echo 'Pipeline failed!'
+            echo 'Pipeline failed'
         }
     }
 }
